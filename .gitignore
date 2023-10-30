@@ -1,0 +1,12 @@
+__pycache__
+.ipynb_checkpoints
+.idea
+data*
+runs
+runs_*
+output*
+logspecgram*
+results*
+test
+web/midi
+web/soundfonts_js
