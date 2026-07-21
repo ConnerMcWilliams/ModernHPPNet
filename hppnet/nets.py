@@ -17,12 +17,25 @@ from .lstm import BiLSTM
 
 
 class FreqGroupLSTM(nn.Module):
-    def __init__(self, channel_in, channel_out, lstm_size) -> None:
+    def __init__(self, channel_in, channel_out, lstm_size,
+                 seq_model='lstm', mamba_impl='mamba1') -> None:
         super().__init__()
 
         self.channel_out = channel_out
 
-        self.lstm = BiLSTM(channel_in, lstm_size//2)
+        # Sequence model over the time axis (shared across frequency groups).
+        # 'lstm' reproduces the original HPPNet baseline exactly; 'mamba' /
+        # 'bimamba' swap in a (bi)directional Mamba SSM for the ablation.
+        if seq_model == 'lstm':
+            self.seq = BiLSTM(channel_in, lstm_size//2)
+        elif seq_model == 'mamba':
+            from .mamba import MambaSeq
+            self.seq = MambaSeq(channel_in, lstm_size, impl=mamba_impl)
+        elif seq_model == 'bimamba':
+            from .mamba import BiMambaSeq
+            self.seq = BiMambaSeq(channel_in, lstm_size, impl=mamba_impl)
+        else:
+            raise ValueError(f'unknown seq_model: {seq_model}')
         self.linear = nn.Linear(lstm_size, channel_out)
 
     def forward(self, x):
@@ -37,7 +50,7 @@ class FreqGroupLSTM(nn.Module):
         # => [(b*freq) x T x c_in]
         x = x.reshape([b*n_freq, t, c_in])
         # => [(b*freq) x T x lstm_size]
-        x = self.lstm(x)
+        x = self.seq(x)
         # => [(b*freq) x T x c_out]
         x = self.linear(x)
         # => [b x freq x T x c_out]

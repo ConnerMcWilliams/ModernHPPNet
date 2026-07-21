@@ -11,3 +11,12 @@ Pillow>=6.2.0
 RandomWords
 nnAudio==0.2.6
 
+# Optional -- only for the Mamba / BiMamba sequence-model ablation
+# (seq_model=mamba|bimamba; named configs: mamba, bimamba, mamba2, bimamba2).
+# CUDA-only: these compile CUDA kernels and need nvcc matching the torch CUDA
+# build and a GPU with compute capability >= 7.0. Install with:
+#   pip install --no-build-isolation causal-conv1d mamba-ssm
+# causal-conv1d>=1.4
+# mamba-ssm==2.2.*
+# einops
+

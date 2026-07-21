@@ -51,9 +51,10 @@ class Permute(nn.Module):
         return torch.permute(x, self.dims)
 
 class Head(nn.Module):
-    def __init__(self, model_size) -> None:
+    def __init__(self, model_size, seq_model='lstm', mamba_impl='mamba1') -> None:
         super().__init__()
-        self.head = FreqGroupLSTM(model_size, 1, model_size)
+        self.head = FreqGroupLSTM(model_size, 1, model_size,
+                                  seq_model=seq_model, mamba_impl=mamba_impl)
     def forward(self, x):
         # input: [B x model_size x T x 88]
         # output: [B x 1 x T x 88]
@@ -61,7 +62,8 @@ class Head(nn.Module):
         return y
 
 class SubNet(nn.Module):
-    def __init__(self, model_size = 128,  head_names = ['head'], concat = False, time_pooling = False) -> None:
+    def __init__(self, model_size = 128,  head_names = ['head'], concat = False, time_pooling = False,
+                 seq_model='lstm', mamba_impl='mamba1') -> None:
         super().__init__()
         # Trunk
         self.trunk = CNNTrunk(c_in=1, c_har=16, embedding=model_size)
@@ -74,7 +76,7 @@ class SubNet(nn.Module):
         self.head_names = head_names
         self.heads = nn.ModuleDict()
         for name in head_names:
-            self.heads[name] = Head(head_size)
+            self.heads[name] = Head(head_size, seq_model=seq_model, mamba_impl=mamba_impl)
 
         self.time_pooling = time_pooling
        
@@ -111,16 +113,23 @@ class HPPNet(nn.Module):
         self.config = config
         model_size = config['model_size']
 
+        # Sequence-model selection for the frequency-grouped heads (ablation).
+        # Defaults preserve the original BiLSTM baseline.
+        seq_model = config.get('seq_model', 'lstm')
+        mamba_impl = config.get('mamba_impl', 'mamba1')
+
         self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(top_db=80)
 
         self.subnets = {}
         self.subnets['all'] = nn.ModuleList() #[self.subnet_onset, self.subnet_frame]
         if 'onset_subnet' in self.config['SUBNETS_TO_TRAIN']:
-            self.subnet_onset = SubNet(model_size, config['onset_subnet_heads'])
+            self.subnet_onset = SubNet(model_size, config['onset_subnet_heads'],
+                                       seq_model=seq_model, mamba_impl=mamba_impl)
             self.subnets['onset_subnet'] = self.subnet_onset
             self.subnets['all'].append(self.subnet_onset)
         if 'frame_subnet' in self.config['SUBNETS_TO_TRAIN']:
-            self.subnet_frame = SubNet(model_size, config['frame_subnet_heads'], time_pooling=True)
+            self.subnet_frame = SubNet(model_size, config['frame_subnet_heads'], time_pooling=True,
+                                       seq_model=seq_model, mamba_impl=mamba_impl)
             self.subnets['frame_subnet'] = self.subnet_frame
             self.subnets['all'].append(self.subnet_frame)
             

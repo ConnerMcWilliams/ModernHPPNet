@@ -95,6 +95,12 @@ def model_config():
     fixed_dilation = 24
     model_size = 128
 
+    # Sequence model inside the frequency-grouped heads (ablation).
+    #   seq_model:  'lstm' (baseline) | 'mamba' (causal) | 'bimamba' (bidirectional)
+    #   mamba_impl: 'mamba1' | 'mamba2'   (only used when seq_model != 'lstm')
+    seq_model = 'lstm'
+    mamba_impl = 'mamba1'
+
 
 @ex.named_config
 def hpp_base():
@@ -122,6 +128,37 @@ def hpp_ultra_tiny():
     frame_subnet_heads = []
     batch_size=4
     iterations = 600*1000
+
+
+# ---------------------------------------------------------------------------
+# Sequence-model ablation: replace the frequency-grouped BiLSTM with a
+# (bi)directional Mamba SSM. Combine with any model config, e.g.
+#   python train.py with hpp_base bimamba
+# Requires a CUDA GPU and: pip install --no-build-isolation causal-conv1d mamba-ssm
+# ---------------------------------------------------------------------------
+@ex.named_config
+def mamba():
+    seq_model = 'mamba'
+    mamba_impl = 'mamba1'
+    model_name = 'HPPNet-Mamba'
+
+@ex.named_config
+def bimamba():
+    seq_model = 'bimamba'
+    mamba_impl = 'mamba1'
+    model_name = 'HPPNet-BiMamba'
+
+@ex.named_config
+def mamba2():
+    seq_model = 'mamba'
+    mamba_impl = 'mamba2'
+    model_name = 'HPPNet-Mamba2'
+
+@ex.named_config
+def bimamba2():
+    seq_model = 'bimamba'
+    mamba_impl = 'mamba2'
+    model_name = 'HPPNet-BiMamba2'
 
 
 @ex.config
