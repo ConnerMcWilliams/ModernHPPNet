@@ -77,6 +77,12 @@ set +u
 # shellcheck disable=SC1091
 source "$CONDA_HOME/etc/profile.d/conda.sh"
 
+# Recent Miniconda gates the Anaconda default channels behind a Terms-of-Service
+# prompt that aborts non-interactive `conda create`. Accept it up front (no-op if
+# already accepted, or if this conda build predates the `tos` subcommand).
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main >/dev/null 2>&1 || true
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r    >/dev/null 2>&1 || true
+
 if ! conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
   echo "==> Creating conda env '$ENV_NAME' (python 3.10)"
   conda create -y -n "$ENV_NAME" python=3.10
