@@ -1,7 +1,9 @@
 scipy>=1.1.0
 torch>=1.2.0
+torchvision
+torchaudio
 SoundFile>=0.10.2
-sacred==0.7.4
+sacred>=0.8.7          # 0.7.x breaks on Python >= 3.10 (collections.abc, pprint._safe_repr)
 librosa>=0.6.2
 numpy>=1.15.0
 tqdm>=4.28.1
@@ -9,13 +11,27 @@ git+https://github.com/craffel/mir_eval.git
 mido>=1.2.9
 Pillow>=6.2.0
 RandomWords
+# nnAudio 0.2.6 uses the removed `np.float` alias; on numpy>=1.24 either apply a
+# trivial `np.float`->`float` patch in nnAudio, or install with numpy<1.24.
 nnAudio==0.2.6
+
+# Also imported by the training / eval / dataset code:
+pandas
+h5py
+matplotlib
+torchsummary
+tensorboard
 
 # Optional -- only for the Mamba / BiMamba sequence-model ablation
 # (seq_model=mamba|bimamba; named configs: mamba, bimamba, mamba2, bimamba2).
-# CUDA-only: these compile CUDA kernels and need nvcc matching the torch CUDA
-# build and a GPU with compute capability >= 7.0. Install with:
-#   pip install --no-build-isolation causal-conv1d mamba-ssm
+# CUDA-only: needs a GPU with compute capability >= 7.0. Two install options:
+#   1) Compile against your torch CUDA build (needs nvcc + full CUDA toolkit):
+#        pip install --no-build-isolation causal-conv1d mamba-ssm einops
+#   2) Or grab prebuilt wheels matching your torch/cuda/python/abi from the
+#      state-spaces/mamba and Dao-AILab/causal-conv1d GitHub releases, e.g. for
+#      torch2.4 + cu12 + cp310 + cxx11abiFALSE:
+#        mamba-ssm==2.2.6.post3, causal-conv1d==1.5.4
+#      NOTE: mamba-ssm 2.2.x also needs transformers<4.45 (GreedySearchDecoderOnlyOutput).
 # causal-conv1d>=1.4
 # mamba-ssm==2.2.*
 # einops

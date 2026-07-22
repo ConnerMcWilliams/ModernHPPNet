@@ -35,8 +35,14 @@ time_str = datetime.now().strftime('%y%m%d-%H%M%S') + '_' + random_word_str
 ex = Experiment('train_transcriber')
 ex.time_str = time_str
 
-mongo_ob = MongoObserver.create(url='10.177.55.66:7000', db_name='piano_transcription') #harmonic_net_mono
-ex.observers.append(mongo_ob)
+# Optional MongoDB observer. Disabled by default so training does not depend on a
+# reachable Mongo host; set HPPNET_MONGO=<host:port> to enable it.
+if os.environ.get('HPPNET_MONGO'):
+    try:
+        mongo_ob = MongoObserver.create(url=os.environ['HPPNET_MONGO'], db_name='piano_transcription') #harmonic_net_mono
+        ex.observers.append(mongo_ob)
+    except Exception as e:
+        print(f'[warn] Mongo observer disabled: {e}')
 
 ex.tags = []
 
@@ -199,11 +205,19 @@ def train(logdir, device, iterations, resume_iteration, checkpoint_interval, tra
 
 
     # add source files to ex
-    src_file_set = set()
-    src_file_dir = os.path.join(ex.observers[1].dir, 'src')
-    utils.save_src_files(ex.main_locals, src_file_dir, query_str='hppnet', src_path_set=src_file_set)
-    for src_path in src_file_set:
-        ex.add_source_file(src_path)
+    # Locate the FileStorageObserver by type (its list index depends on whether the
+    # optional Mongo observer is enabled).
+    fs_observer = next(o for o in ex.current_run.observers if isinstance(o, FileStorageObserver))
+    src_file_dir = os.path.join(fs_observer.dir, 'src')
+    # Best-effort source snapshot for provenance; never let it break training.
+    try:
+        src_file_set = set()
+        utils.save_src_files(ex.main_locals, src_file_dir, query_str='hppnet', src_path_set=src_file_set)
+        for src_path in src_file_set:
+            if os.path.exists(src_path):
+                ex.add_source_file(src_path)
+    except Exception as e:
+        print(f'[warn] source snapshot skipped: {e}')
 
     utils.copy_dir('./', src_file_dir)
     utils.copy_dir('./hppnet', os.path.join(src_file_dir, 'hppnet'))
@@ -212,7 +226,7 @@ def train(logdir, device, iterations, resume_iteration, checkpoint_interval, tra
     os.makedirs(logdir, exist_ok=True)
     writer = SummaryWriter(logdir)
 
-    ex.basedir = ex.current_run.observers[1].basedir
+    ex.basedir = fs_observer.basedir
 
     train_groups, validation_groups = ['train'], ['validation']
 
