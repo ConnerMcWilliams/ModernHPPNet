@@ -112,6 +112,14 @@ total=$(printf '%s\n' "$entries" | grep -c .)
 batch=$(( (total + JOBS - 1) / JOBS ))
 [ "$batch" -lt 1 ] && batch=1
 
+# Pre-create every parent directory single-threaded FIRST. Parallel extractors
+# otherwise race to mkdir shared parents; the loser aborts that entry with
+# "checkdir error: ... File exists" and silently drops the file. Deriving dirs
+# from the file paths (rather than trusting the archive's own dir entries) covers
+# archives that omit them; mkdir -p handles nesting and pre-existing dirs.
+printf '%s\n' "$entries" | sed 's:/[^/]*$::' | sort -u \
+    | while IFS= read -r d; do [ -n "$d" ] && mkdir -p "$d"; done
+
 printf '%s\n' "$entries" \
     | xargs -d '\n' -P "$JOBS" -n "$batch" bash -c 'extract_many "$0" "$@"' "$ZIP"
 
