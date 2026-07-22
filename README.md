@@ -98,9 +98,24 @@ python train.py with hpp_base bimamba         # model_size 128, bidirectional Ma
 
 The default (no sequence-model config) is `seq_model=lstm`, i.e. the original HPPNet baseline.
 
-**Installing Mamba (CUDA only).** The Mamba options require compiling CUDA kernels, so they need a
-GPU with compute capability ≥ 7.0 and a `nvcc` matching your PyTorch CUDA build. They are not
-installed by `requirements.txt` — install them separately with:
+**Installing Mamba (CUDA only).** The Mamba options need a CUDA GPU with compute capability ≥ 7.0.
+They are not installed by `requirements.txt` — install them separately. The easiest path uses
+**prebuilt wheels** (no `nvcc` / CUDA toolkit, no compile). For the `torch2.4` / `cu12` / `cp310` /
+`cxx11abiFALSE` stack (as pinned in `scripts/runpod_train_eval.sh`), grab the matching wheels from
+the [state-spaces/mamba](https://github.com/state-spaces/mamba/releases) and
+[Dao-AILab/causal-conv1d](https://github.com/Dao-AILab/causal-conv1d/releases) GitHub releases:
+
+```bash
+pip install "transformers<4.45"   # mamba-ssm 2.2.x needs the removed GreedySearchDecoderOnlyOutput
+pip install \
+  https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.5.4/causal_conv1d-1.5.4+cu12torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl \
+  https://github.com/state-spaces/mamba/releases/download/v2.2.6.post3/mamba_ssm-2.2.6.post3+cu12torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl \
+  einops
+```
+
+Pick the wheels whose `cuXX` / `torchX.Y` / `cpXYZ` / `cxx11abi*` tags match your environment. If no
+prebuilt wheel matches (your pod's torch / python / CUDA differ from the wheel ABI), fall back to
+compiling against your PyTorch CUDA build, which does need a matching `nvcc`:
 
 ```bash
 pip install --no-build-isolation causal-conv1d mamba-ssm einops
