@@ -38,6 +38,26 @@ python train.py with logdir=runs/model iterations=1000000
 
 Trained models will be saved in the specified `logdir`, otherwise at a timestamped directory under `runs/`.
 
+### Experiment tracking with Weights & Biases
+
+Training and evaluation stream all metrics to [Weights & Biases](https://wandb.ai/) — wandb
+replaces the project's old TensorBoard logging. Set your API key once, then train/evaluate as
+usual:
+
+```bash
+export WANDB_API_KEY=xxxxxxxx                 # from https://wandb.ai/authorize
+export WANDB_PROJECT=hppnet-mamba-ablation    # optional; this is the default
+python train.py with hpp_tiny mamba logdir=runs/mamba
+python evaluate.py runs/mamba/model-100000.pt MAESTRO test --wandb
+```
+
+`train.py` logs per-step losses, validation metrics, and piano-roll images; `evaluate.py --wandb`
+logs the final test metrics (note/frame precision, recall, F1, …) plus a per-file table. Run
+name/group/id come from the standard wandb env vars (`WANDB_NAME`, `WANDB_RUN_GROUP`,
+`WANDB_RUN_ID`, `WANDB_RESUME`), so a training run and its evaluation can share one run id and land
+on the same run. If `WANDB_API_KEY` is unset, training still proceeds and logs to a local disabled
+run.
+
 ### Model & Sequence-Model Options
 
 `train.py` exposes several [sacred](https://sacred.readthedocs.io/) *named configs* that can be
@@ -110,6 +130,29 @@ In order to test on the Maestro dataset's test split instead of the MAPS databas
 ```bash
 python evaluate.py runs/transcriber/model-600000.pt MAESTRO test
 ```
+
+### Full ablation on RunPod
+
+`scripts/runpod_train_eval.sh` runs the whole comparison end-to-end on a fresh RunPod CUDA box: it
+installs the system + Python dependencies (torch 2.4 + the prebuilt Mamba wheels), downloads and
+prepares full MAESTRO v3, then trains **and** evaluates the three sequence-model variants — `lstm`
+(the original HPPNet baseline), `mamba`, and `bimamba` — logging every result to one wandb project
+so they line up side-by-side for comparison.
+
+```bash
+export WANDB_API_KEY=xxxxxxxx
+bash scripts/runpod_train_eval.sh
+```
+
+Each variant becomes one wandb run (its training curves plus its final MAESTRO-test metrics),
+grouped by `EXPERIMENT`. Key knobs, all env-overridable: `VARIANTS="lstm mamba bimamba"`,
+`SIZE_CONFIG=hpp_tiny`, `ITERATIONS=100000`, `WANDB_PROJECT`, `EXPERIMENT`. Do a cheap end-to-end
+check first before committing to the long run:
+
+```bash
+ITERATIONS=200 CHECKPOINT_INTERVAL=100 VALIDATION_INTERVAL=100 bash scripts/runpod_train_eval.sh
+```
+
 ## Acknowledgements
 
 This project is based on the PyTorch implementation of Onsets and Frames model => https://github.com/jongwook/onsets-and-frames

@@ -4,6 +4,7 @@ __pycache__
 data*
 runs
 runs_*
+wandb
 output*
 logspecgram*
 results*

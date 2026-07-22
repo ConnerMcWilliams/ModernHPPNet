@@ -20,7 +20,7 @@ pandas
 h5py
 matplotlib
 torchsummary
-tensorboard
+wandb
 
 # Optional -- only for the Mamba / BiMamba sequence-model ablation
 # (seq_model=mamba|bimamba; named configs: mamba, bimamba, mamba2, bimamba2).
