@@ -427,16 +427,17 @@ def train(logdir, device, iterations, resume_iteration, checkpoint_interval, tra
                         clip_len = clip_len,
                         save_path=config['logdir'] + f'/model-{i}-test'
                     )
-                    test_log = {}
+                    wandb_test_log = {}
                     for key, values in eval_result.items():
                         mean_val = np.mean(values)
                         # std_val = f"{np.mean(values):.4f} ± {np.std(values):.4f}"
                         label = 'test/' + key.replace(' ', '_')
-                        test_log[label] = mean_val
                         ex.log_scalar(label, mean_val, i)
                         test_result[label] = "%.2f"%(mean_val*100)
-                    wandb.log(test_log, step=i)
-                    wandb.summary.update(test_log)
+                        if key.startswith('metric/'):
+                            wandb_test_log['test/' + key[len('metric/'):]] = float(mean_val)
+                    wandb.log(wandb_test_log, step=i)
+                    wandb.summary.update(wandb_test_log)
                 ex.info[f'test_step_{i}'] = test_result
                 model.train()
 
