@@ -30,6 +30,20 @@ pip install -r requirements.txt
 python train.py
 ```
 
+**nnAudio / numpy caveat.** `nnAudio 0.2.6` uses numpy's removed `np.float` alias, so on
+`numpy >= 1.24` (what a fresh `pip install -r requirements.txt` resolves to) `from hppnet import *`
+— run by both `train.py` and `evaluate.py` — fails at import with
+`AttributeError: module 'numpy' has no attribute 'float'`. Fix it by either installing `numpy < 1.24`
+**or** rewriting the bare `np.float` alias to `float` in the installed nnAudio package:
+
+```bash
+# option 2: patch the installed nnAudio in place (leaves np.float32/np.float64 intact)
+NNAUDIO_DIR="$(python -c 'import nnAudio, os; print(os.path.dirname(nnAudio.__file__))')"
+grep -rlZ --include='*.py' -E 'np\.float\b' "$NNAUDIO_DIR" | xargs -0 -r sed -i -E 's/np\.float\b/float/g'
+```
+
+`scripts/runpod_train_eval.sh` applies this patch automatically.
+
 `train.py` is written using [sacred](https://sacred.readthedocs.io/), and accepts configuration options such as:
 
 ```bash
