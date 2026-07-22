@@ -19,8 +19,8 @@ import torch.utils.data
 import torch.cuda
 import torchaudio
 import torchvision
-from torch.utils.tensorboard import SummaryWriter
 import torchsummary
+import wandb
 
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -35,8 +35,14 @@ time_str = datetime.now().strftime('%y%m%d-%H%M%S') + '_' + random_word_str
 ex = Experiment('train_transcriber')
 ex.time_str = time_str
 
-mongo_ob = MongoObserver.create(url='10.177.55.66:7000', db_name='piano_transcription') #harmonic_net_mono
-ex.observers.append(mongo_ob)
+# Optional MongoDB observer. Disabled by default so training does not depend on a
+# reachable Mongo host; set HPPNET_MONGO=<host:port> to enable it.
+if os.environ.get('HPPNET_MONGO'):
+    try:
+        mongo_ob = MongoObserver.create(url=os.environ['HPPNET_MONGO'], db_name='piano_transcription') #harmonic_net_mono
+        ex.observers.append(mongo_ob)
+    except Exception as e:
+        print(f'[warn] Mongo observer disabled: {e}')
 
 ex.tags = []
 
@@ -72,6 +78,9 @@ def config():
 
     validation_length = sequence_length
     validation_interval = 400
+
+    # How often (in steps) to push training-loss scalars to wandb.
+    log_interval = 10
 
     test_interval= None
 
@@ -184,6 +193,34 @@ def train_with_test():
 ex.main_locals = locals()
 
 
+def init_wandb(logdir, config):
+    """Start (or resume) the Weights & Biases run for this job.
+
+    Project / run name / group / id / resume are read from the standard wandb env vars
+    (WANDB_PROJECT, WANDB_NAME, WANDB_RUN_GROUP, WANDB_RUN_ID, WANDB_RESUME, WANDB_JOB_TYPE)
+    when set by scripts/runpod_train_eval.sh; otherwise sensible defaults are derived here.
+    Best-effort: if wandb can't start (e.g. no WANDB_API_KEY) fall back to a disabled run so
+    training still proceeds.
+    """
+    kwargs = dict(
+        project=os.environ.get('WANDB_PROJECT', 'hppnet-mamba-ablation'),
+        name=os.environ.get('WANDB_NAME', config.get('model_name', 'HPPNet') + '_' + time_str),
+        group=os.environ.get('WANDB_RUN_GROUP'),
+        job_type=os.environ.get('WANDB_JOB_TYPE', 'train'),
+        config=config,
+        dir=logdir,
+    )
+    run_id = os.environ.get('WANDB_RUN_ID')
+    if run_id:
+        kwargs['id'] = run_id
+        kwargs['resume'] = os.environ.get('WANDB_RESUME', 'allow')
+    try:
+        return wandb.init(**kwargs)
+    except Exception as e:
+        print(f'[warn] wandb disabled ({e}); logging to a local disabled run')
+        return wandb.init(mode='disabled', config=config)
+
+
 @ex.automain
 def train(logdir, device, iterations, resume_iteration, checkpoint_interval, train_on, batch_size, sequence_length,
            learning_rate, learning_rate_decay_steps, learning_rate_decay_rate, leave_one_out,
@@ -199,20 +236,29 @@ def train(logdir, device, iterations, resume_iteration, checkpoint_interval, tra
 
 
     # add source files to ex
-    src_file_set = set()
-    src_file_dir = os.path.join(ex.observers[1].dir, 'src')
-    utils.save_src_files(ex.main_locals, src_file_dir, query_str='hppnet', src_path_set=src_file_set)
-    for src_path in src_file_set:
-        ex.add_source_file(src_path)
+    # Locate the FileStorageObserver by type (its list index depends on whether the
+    # optional Mongo observer is enabled).
+    fs_observer = next(o for o in ex.current_run.observers if isinstance(o, FileStorageObserver))
+    src_file_dir = os.path.join(fs_observer.dir, 'src')
+    # Best-effort source snapshot for provenance; never let it break training.
+    try:
+        src_file_set = set()
+        utils.save_src_files(ex.main_locals, src_file_dir, query_str='hppnet', src_path_set=src_file_set)
+        for src_path in src_file_set:
+            if os.path.exists(src_path):
+                ex.add_source_file(src_path)
+    except Exception as e:
+        print(f'[warn] source snapshot skipped: {e}')
 
     utils.copy_dir('./', src_file_dir)
     utils.copy_dir('./hppnet', os.path.join(src_file_dir, 'hppnet'))
 
 
     os.makedirs(logdir, exist_ok=True)
-    writer = SummaryWriter(logdir)
+    init_wandb(logdir, dict(config))
+    log_interval = config['log_interval']
 
-    ex.basedir = ex.current_run.observers[1].basedir
+    ex.basedir = fs_observer.basedir
 
     train_groups, validation_groups = ['train'], ['validation']
 
@@ -314,9 +360,8 @@ def train(logdir, device, iterations, resume_iteration, checkpoint_interval, tra
         if clip_gradient_norm:
             clip_grad_norm_(model.parameters(), clip_gradient_norm)
 
-        for key, value in {'loss': loss, **losses}.items():
-            writer.add_scalar(key, value.item(), global_step=i)
-            # ex.log_scalar(key, value.item(),i)
+        if i % log_interval == 0:
+            wandb.log({'train/' + key: value.item() for key, value in {'loss': loss, **losses}.items()}, step=i)
 
         if(i %10 == 0):
             tqdm_dict['train/loss'] = loss.cpu().detach().numpy()
@@ -338,6 +383,7 @@ def train(logdir, device, iterations, resume_iteration, checkpoint_interval, tra
             dir_path = os.path.join(logdir, 'piano_roll')
             os.makedirs(dir_path, exist_ok=True)
             plt.imsave(dir_path + '/train_step_%d.png'%(i), frame_img.detach().cpu().numpy())
+            wandb.log({'piano_roll/ref_vs_pred': wandb.Image(frame_img.detach().cpu().numpy())}, step=i)
 
         ##################################
         # Validate
@@ -346,10 +392,13 @@ def train(logdir, device, iterations, resume_iteration, checkpoint_interval, tra
             model.eval()
             with torch.no_grad():
                 val_metrics = evaluate(validation_dataset, model, device)
+                val_log = {}
                 for key, value in val_metrics.items():
                     mean_val = torch.tensor(value).cpu().numpy().mean()
-                    writer.add_scalar('validation/' + key.replace(' ', '_'), mean_val, global_step=i)
-                    ex.log_scalar('validation/' + key.replace(' ', '_'), mean_val, i)
+                    label = 'validation/' + key.replace(' ', '_')
+                    val_log[label] = mean_val
+                    ex.log_scalar(label, mean_val, i)
+                wandb.log(val_log, step=i)
                 # tqdm_dict['on_loss'] = '%.4f'%np.mean(val_metrics['loss/onset'])
                 tqdm_dict['f_f1'] = '%.3f'%np.mean(val_metrics['metric/frame/f1'])
                 tqdm_dict['n_f1'] = '%.3f'%np.mean(val_metrics['metric/note/f1'])
@@ -378,13 +427,17 @@ def train(logdir, device, iterations, resume_iteration, checkpoint_interval, tra
                         clip_len = clip_len,
                         save_path=config['logdir'] + f'/model-{i}-test'
                     )
+                    wandb_test_log = {}
                     for key, values in eval_result.items():
                         mean_val = np.mean(values)
                         # std_val = f"{np.mean(values):.4f} ± {np.std(values):.4f}"
                         label = 'test/' + key.replace(' ', '_')
-                        writer.add_scalar(label, mean_val, global_step=i)
                         ex.log_scalar(label, mean_val, i)
                         test_result[label] = "%.2f"%(mean_val*100)
+                        if key.startswith('metric/'):
+                            wandb_test_log['test/' + key[len('metric/'):]] = float(mean_val)
+                    wandb.log(wandb_test_log, step=i)
+                    wandb.summary.update(wandb_test_log)
                 ex.info[f'test_step_{i}'] = test_result
                 model.train()
 
@@ -394,3 +447,5 @@ def train(logdir, device, iterations, resume_iteration, checkpoint_interval, tra
             # torch.save(optimizer.state_dict(), os.path.join(logdir, 'last-optimizer-state.pt'))
             for subnet in SUBNETS_TO_TRAIN:
                 torch.save(optimizers[subnet].state_dict(), os.path.join(logdir, f'last-optimizer-state-{subnet}.pt'))
+
+    wandb.finish()

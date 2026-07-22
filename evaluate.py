@@ -236,7 +236,8 @@ def evaluate(data, model, device, onset_threshold=0.5, frame_threshold=0.5, save
     return metrics
 
 
-def evaluate_file(model_file, dataset, dataset_group, sequence_length, save_path,onset_threshold, frame_threshold, device, clip_len=10240, mini_dataset=False):
+def evaluate_file(model_file, dataset, dataset_group, sequence_length, save_path,onset_threshold, frame_threshold, device, clip_len=10240, mini_dataset=False,
+                  use_wandb=False, wandb_project=None, wandb_run_name=None):
 
     if(save_path == None):
         group_str = dataset_group if dataset_group is not None else 'default'
@@ -293,6 +294,39 @@ def evaluate_file(model_file, dataset, dataset_group, sequence_length, save_path
         print('save to :', csv_path)
         df.to_csv(csv_path)
 
+    if use_wandb:
+        # Log the final test metrics to Weights & Biases. When WANDB_RUN_ID / WANDB_RESUME are
+        # set (by scripts/runpod_train_eval.sh) this resumes the variant's training run so the
+        # test numbers land on the same run as its training curves. Best-effort: never let a
+        # wandb hiccup fail the evaluation.
+        try:
+            import wandb
+            init_kwargs = dict(
+                project=wandb_project or os.environ.get('WANDB_PROJECT', 'hppnet-mamba-ablation'),
+                name=wandb_run_name or os.environ.get('WANDB_NAME'),
+                group=os.environ.get('WANDB_RUN_GROUP'),
+                job_type=os.environ.get('WANDB_JOB_TYPE', 'eval'),
+            )
+            run_id = os.environ.get('WANDB_RUN_ID')
+            if run_id:
+                init_kwargs['id'] = run_id
+                init_kwargs['resume'] = os.environ.get('WANDB_RESUME', 'allow')
+            wandb.init(**init_kwargs)
+            test_summary = {
+                'test/' + key[len('metric/'):]: float(np.mean(values))
+                for key, values in metrics.items() if key.startswith('metric/')
+            }
+            wandb.summary.update(test_summary)
+            wandb.log(test_summary)
+            try:
+                wandb.log({'test/per_file': wandb.Table(dataframe=df)})
+            except Exception as te:
+                print(f'[warn] wandb per-file table skipped: {te}')
+            wandb.finish()
+            print('logged evaluation metrics to wandb')
+        except Exception as e:
+            print(f'[warn] wandb logging skipped: {e}')
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('model_file', type=str)
@@ -304,6 +338,11 @@ if __name__ == '__main__':
     parser.add_argument('--frame-threshold', default=0.4, type=float)
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--mini-dataset', action='store_true')
+    parser.add_argument('--wandb', dest='use_wandb', action='store_true',
+                        help='Log final test metrics + a per-file table to Weights & Biases. '
+                             'Resumes the training run when WANDB_RUN_ID/WANDB_RESUME are set.')
+    parser.add_argument('--wandb-project', dest='wandb_project', default=None)
+    parser.add_argument('--wandb-run-name', dest='wandb_run_name', default=None)
 
     with torch.no_grad():
         evaluate_file(**vars(parser.parse_args()))
