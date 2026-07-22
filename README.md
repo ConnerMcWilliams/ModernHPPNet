@@ -21,6 +21,12 @@ cd data
 
 This will download the full Maestro dataset from Google's server and automatically unzip and encode them as FLAC files in order to save storage. However, you'll still need about 200 GB of space for intermediate storage.
 
+Every stage — download, extraction, and FLAC conversion — runs in parallel across your CPU cores. The download uses `aria2c` when available, otherwise it falls back to parallel ranged `curl` requests; extraction prefers `unzip` and falls back to `bsdtar`. If `ffmpeg` is not installed the FLAC conversion step is skipped. The script's behavior can be tuned with environment variables:
+
+- `JOBS` — number of parallel workers (default: `nproc`)
+- `URL` — dataset URL (default: MAESTRO v3.0.0)
+- `ZIP` — local zip filename (default: basename of `URL`)
+
 ### Training
 
 All package requirements are contained in `requirements.txt`. To train the model, run:
