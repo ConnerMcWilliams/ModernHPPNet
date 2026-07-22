@@ -255,7 +255,7 @@ def train(logdir, device, iterations, resume_iteration, checkpoint_interval, tra
 
 
     os.makedirs(logdir, exist_ok=True)
-    wandb_run = init_wandb(logdir, dict(config))
+    init_wandb(logdir, dict(config))
     log_interval = config['log_interval']
 
     ex.basedir = fs_observer.basedir
