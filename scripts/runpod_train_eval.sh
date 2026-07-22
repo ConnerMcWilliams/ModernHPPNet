@@ -90,13 +90,20 @@ if [ "$SKIP_SETUP" != "1" ]; then
   pip install --upgrade pip
   # Pinned, known-good stack. torch first so the Mamba wheels match its ABI.
   pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu121
-  pip install "numpy<2"            # nnAudio 0.2.6 uses the removed np.float alias under numpy 2.x
+  pip install "numpy<2"            # nnAudio 0.2.6 needs a bare-np.float patch (removed in numpy>=1.24, applied below)
   pip install "transformers<4.45"  # mamba-ssm 2.2.x imports the removed GreedySearchDecoderOnlyOutput
   # Prebuilt Mamba kernels (no nvcc/build needed). If your pod's torch/python differ from the
   # wheel ABI above, replace the next line with the compile path:
   #   pip install --no-build-isolation causal-conv1d mamba-ssm einops
   pip install "$CAUSAL_CONV1D_WHL" "$MAMBA_SSM_WHL" einops
   pip install -r requirements.txt
+
+  # nnAudio 0.2.6 (installed above) still uses the bare `np.float` alias, removed in numpy>=1.24
+  # which the numpy<2 pin resolves to. hppnet imports nnAudio at module load, so rewrite the
+  # alias to `float` in place; this is what actually makes `from hppnet import *` work. The word
+  # boundary leaves np.float32/np.float64 intact, and the grep|xargs form is a no-op once patched.
+  NNAUDIO_DIR="$("$PYTHON" -c 'import nnAudio, os; print(os.path.dirname(nnAudio.__file__))')"
+  grep -rlZ --include='*.py' -E 'np\.float\b' "$NNAUDIO_DIR" | xargs -0 -r sed -i -E 's/np\.float\b/float/g'
 fi
 
 # --------------------------------------------------------------------------------------------
