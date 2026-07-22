@@ -109,19 +109,34 @@ if [ -z "$entries" ]; then
     exit 1
 fi
 total=$(printf '%s\n' "$entries" | grep -c .)
-batch=$(( (total + JOBS - 1) / JOBS ))
-[ "$batch" -lt 1 ] && batch=1
 
-# Pre-create every parent directory single-threaded FIRST. Parallel extractors
-# otherwise race to mkdir shared parents; the loser aborts that entry with
-# "checkdir error: ... File exists" and silently drops the file. Deriving dirs
-# from the file paths (rather than trusting the archive's own dir entries) covers
-# archives that omit them; mkdir -p handles nesting and pre-existing dirs.
-printf '%s\n' "$entries" | sed 's:/[^/]*$::' | sort -u \
-    | while IFS= read -r d; do [ -n "$d" ] && mkdir -p "$d"; done
+# Resumable: if every archived file is already on disk (a prior run got this far),
+# skip extraction rather than re-inflating 100+ GB. Stop at the first missing entry so
+# the common "partially extracted" case stays cheap. Entries are archive-relative and we
+# run in the same CWD they extract into, so a bare [ -e ] test is the right check.
+already_extracted=1
+while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    if [ ! -e "$e" ]; then already_extracted=0; break; fi
+done <<< "$entries"
 
-printf '%s\n' "$entries" \
-    | xargs -d '\n' -P "$JOBS" -n "$batch" bash -c 'extract_many "$0" "$@"' "$ZIP"
+if [ "$already_extracted" -eq 1 ]; then
+    echo "All $total entries already extracted; skipping extraction."
+else
+    batch=$(( (total + JOBS - 1) / JOBS ))
+    [ "$batch" -lt 1 ] && batch=1
+
+    # Pre-create every parent directory single-threaded FIRST. Parallel extractors
+    # otherwise race to mkdir shared parents; the loser aborts that entry with
+    # "checkdir error: ... File exists" and silently drops the file. Deriving dirs
+    # from the file paths (rather than trusting the archive's own dir entries) covers
+    # archives that omit them; mkdir -p handles nesting and pre-existing dirs.
+    printf '%s\n' "$entries" | sed 's:/[^/]*$::' | sort -u \
+        | while IFS= read -r d; do [ -n "$d" ] && mkdir -p "$d"; done
+
+    printf '%s\n' "$entries" \
+        | xargs -d '\n' -P "$JOBS" -n "$batch" bash -c 'extract_many "$0" "$@"' "$ZIP"
+fi
 
 echo "Extraction done."
 
@@ -130,15 +145,26 @@ echo "Extraction done."
 ########################################################################
 # 3. Convert audio to FLAC in parallel
 ########################################################################
-if command -v ffmpeg >/dev/null 2>&1; then
-    echo "Converting the audio files to FLAC with $JOBS workers ..."
-    convert_one() { ffmpeg -y -loglevel fatal -i "$1" -ac 1 -ar 16000 "${1%.wav}.flac"; }
-    export -f convert_one
-    find "$DIR" -name '*.wav' -print0 \
-        | xargs -0 -P "$JOBS" -I {} bash -c 'convert_one "$0"' {}
-else
-    echo "ffmpeg not found; skipping FLAC conversion." >&2
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    # FLAC conversion is not optional: the training/eval loader keeps only 16 kHz FLACs
+    # (built here from the 44.1 kHz WAVs). Skipping it silently produced a WAV-only tree
+    # that later failed training with "num_samples=0", so make it a hard error instead.
+    echo "ffmpeg not found, but 16 kHz FLAC conversion is REQUIRED. Install ffmpeg and re-run." >&2
+    exit 1
 fi
+
+echo "Converting the audio files to FLAC with $JOBS workers ..."
+# Resumable + strict: skip any WAV that already has a non-empty FLAC (so a re-run only
+# fills in what's missing, and an interrupted prior run is cheap to finish), and let a
+# failed ffmpeg abort the whole pipeline rather than silently dropping that file.
+convert_one() {
+    local wav="$1" flac="${1%.wav}.flac"
+    [ -s "$flac" ] && return 0
+    ffmpeg -y -loglevel fatal -i "$wav" -ac 1 -ar 16000 "$flac"
+}
+export -f convert_one
+find "$DIR" -name '*.wav' -print0 \
+    | xargs -0 -P "$JOBS" -I {} bash -c 'convert_one "$0"' {}
 
 echo
 echo "Preparation complete!"
