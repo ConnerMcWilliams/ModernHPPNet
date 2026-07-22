@@ -8,7 +8,7 @@ import torchaudio
 from .lstm import BiLSTM
 # from .mel import melspectrogram
 
-from .nets import  CNNTrunk, FreqGroupLSTM
+from .nets import  CNNTrunk, PatchTrunk, FreqGroupLSTM
 
 from .constants import *
 
@@ -63,10 +63,19 @@ class Head(nn.Module):
 
 class SubNet(nn.Module):
     def __init__(self, model_size = 128,  head_names = ['head'], concat = False, time_pooling = False,
-                 seq_model='lstm', mamba_impl='mamba1') -> None:
+                 seq_model='lstm', mamba_impl='mamba1', trunk='cnn', patch_trunk_depth=2) -> None:
         super().__init__()
-        # Trunk
-        self.trunk = CNNTrunk(c_in=1, c_har=16, embedding=model_size)
+        # Trunk (the "acoustic model"). 'cnn' is the original harmonic dilated conv trunk;
+        # 'patch' swaps in an AuM/ViT-style patch-embedding trunk (ablation). Both map
+        # [B x 1 x T x 352] -> [B x model_size x T x 88].
+        if trunk == 'cnn':
+            self.trunk = CNNTrunk(c_in=1, c_har=16, embedding=model_size)
+        elif trunk == 'patch':
+            self.trunk = PatchTrunk(c_in=1, embedding=model_size,
+                                    seq_model=seq_model, mamba_impl=mamba_impl,
+                                    depth=patch_trunk_depth)
+        else:
+            raise ValueError(f'unknown trunk: {trunk}')
 
         # Heads
         head_size = model_size
@@ -118,18 +127,26 @@ class HPPNet(nn.Module):
         seq_model = config.get('seq_model', 'lstm')
         mamba_impl = config.get('mamba_impl', 'mamba1')
 
+        # Trunk selection (ablation): 'cnn' is the original harmonic dilated conv
+        # acoustic model; 'patch' swaps in a patch-embedding trunk. Defaulted for
+        # backward-compat with older saved configs/checkpoints.
+        trunk = config.get('trunk', 'cnn')
+        patch_trunk_depth = config.get('patch_trunk_depth', 2)
+
         self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(top_db=80)
 
         self.subnets = {}
         self.subnets['all'] = nn.ModuleList() #[self.subnet_onset, self.subnet_frame]
         if 'onset_subnet' in self.config['SUBNETS_TO_TRAIN']:
             self.subnet_onset = SubNet(model_size, config['onset_subnet_heads'],
-                                       seq_model=seq_model, mamba_impl=mamba_impl)
+                                       seq_model=seq_model, mamba_impl=mamba_impl,
+                                       trunk=trunk, patch_trunk_depth=patch_trunk_depth)
             self.subnets['onset_subnet'] = self.subnet_onset
             self.subnets['all'].append(self.subnet_onset)
         if 'frame_subnet' in self.config['SUBNETS_TO_TRAIN']:
             self.subnet_frame = SubNet(model_size, config['frame_subnet_heads'], time_pooling=True,
-                                       seq_model=seq_model, mamba_impl=mamba_impl)
+                                       seq_model=seq_model, mamba_impl=mamba_impl,
+                                       trunk=trunk, patch_trunk_depth=patch_trunk_depth)
             self.subnets['frame_subnet'] = self.subnet_frame
             self.subnets['all'].append(self.subnet_frame)
             

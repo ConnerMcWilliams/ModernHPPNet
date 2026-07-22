@@ -33,6 +33,7 @@ EXPERIMENT="${EXPERIMENT:-$(date +%y%m%d-%H%M%S)}"  # shared group name for the 
 
 VARIANTS="${VARIANTS:-lstm mamba bimamba}"
 SIZE_CONFIG="${SIZE_CONFIG:-hpp_tiny}"              # hpp_base | hpp_tiny | hpp_ultra_tiny
+TRUNK="${TRUNK:-cnn}"                               # cnn (harmonic convs) | patch (patchify ablation)
 ITERATIONS="${ITERATIONS:-100000}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-10000}"
 VALIDATION_INTERVAL="${VALIDATION_INTERVAL:-2000}"
@@ -139,16 +140,24 @@ seq_config() {
   esac
 }
 
+# Trunk ablation token + a run-name tag so patch vs cnn runs never collide.
+case "$TRUNK" in
+  cnn)   trunkcfg="";         trunk_tag="" ;;
+  patch) trunkcfg="patchify"; trunk_tag="patch_" ;;
+  *) echo "[error] unknown TRUNK: $TRUNK (use cnn | patch)" >&2; exit 1 ;;
+esac
+
 for v in $VARIANTS; do
   seqcfg="$(seq_config "$v")"
-  logdir="runs/${EXPERIMENT}/${v}"
-  export WANDB_NAME="$v"
-  export WANDB_RUN_ID="${EXPERIMENT}-${v}"
+  tag="${trunk_tag}${v}"
+  logdir="runs/${EXPERIMENT}/${tag}"
+  export WANDB_NAME="$tag"
+  export WANDB_RUN_ID="${EXPERIMENT}-${tag}"
 
   echo "=========================================================================="
-  echo "==> [$v] training  (size=$SIZE_CONFIG, iters=$ITERATIONS, logdir=$logdir)"
+  echo "==> [$tag] training  (size=$SIZE_CONFIG, trunk=$TRUNK, iters=$ITERATIONS, logdir=$logdir)"
   echo "=========================================================================="
-  WANDB_JOB_TYPE=train "$PYTHON" train.py with $SIZE_CONFIG $seqcfg \
+  WANDB_JOB_TYPE=train "$PYTHON" train.py with $SIZE_CONFIG $trunkcfg $seqcfg \
     logdir="$logdir" \
     iterations="$ITERATIONS" \
     checkpoint_interval="$CHECKPOINT_INTERVAL" \
@@ -165,7 +174,7 @@ for v in $VARIANTS; do
     exit 1
   fi
 
-  echo "==> [$v] evaluating on MAESTRO test ($ckpt)"
+  echo "==> [$tag] evaluating on MAESTRO test ($ckpt)"
   WANDB_JOB_TYPE=eval "$PYTHON" evaluate.py "$ckpt" MAESTRO test --device cuda --wandb
 done
 

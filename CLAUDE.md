@@ -31,7 +31,7 @@ README.md           # User-facing setup/usage docs; keep it in sync with behavio
 hppnet/             # The model package. `from hppnet import *` re-exports the public API (__init__.py).
   constants.py      #   Audio/MIDI constants: SAMPLE_RATE=16000, HOP_LENGTH, MIN/MAX_MIDI (21..108), etc.
   transcriber.py    #   HPPNet top-level module: forward pass, run_on_batch (losses), SubNet/Head.
-  nets.py           #   CNNTrunk (harmonic dilated convs), FreqGroupLSTM (freq-grouped seq wrapper).
+  nets.py           #   CNNTrunk (harmonic dilated convs), PatchTrunk (AuM/ViT patchify trunk), FreqGroupLSTM (freq-grouped seq wrapper).
   lstm.py           #   BiLSTM — the baseline sequence model (chunked inference for long audio).
   mamba.py          #   MambaSeq / BiMambaSeq — drop-in replacements for BiLSTM (ablation).
   dataset.py        #   MAESTRO / MAPS PianoRollAudioDataset; caches preprocessed data as HDF5.
@@ -52,12 +52,20 @@ data/
 
 - **`HPPNet`** (`transcriber.py`) owns a `to_cqt` nnAudio CQT front-end and one or two **`SubNet`s**.
   Which subnets exist is driven by `config['SUBNETS_TO_TRAIN']` (`'onset_subnet'`, `'frame_subnet'`).
-- Each **`SubNet`** = a shared **`CNNTrunk`** + a `nn.ModuleDict` of **`Head`s** (one per head name).
-  Head names come from `config['onset_subnet_heads']` / `config['frame_subnet_heads']` and correspond
-  to prediction keys: `onset`, `frame`, `offset`, `velocity`.
-- **`CNNTrunk`** (`nets.py`) is the harmonic feature extractor: plain conv blocks → a
-  `HarmonicDilatedConv` (8 parallel dilations targeting harmonic spacing on the log-freq axis) → more
-  conv blocks. Uses `InstanceNorm2d`. Output is `[B x model_size x T x 88]`.
+- Each **`SubNet`** = a shared **trunk** ("acoustic model") + a `nn.ModuleDict` of **`Head`s** (one per
+  head name). Head names come from `config['onset_subnet_heads']` / `config['frame_subnet_heads']` and
+  correspond to prediction keys: `onset`, `frame`, `offset`, `velocity`.
+- The trunk is one of two, selected by `config.get('trunk', 'cnn')`:
+  - **`CNNTrunk`** (`nets.py`, default) is the harmonic feature extractor: plain conv blocks → a
+    `HarmonicDilatedConv` (8 parallel dilations targeting harmonic spacing on the log-freq axis) → more
+    conv blocks. Uses `InstanceNorm2d`.
+  - **`PatchTrunk`** (`nets.py`, `trunk='patch'`) is the patchify ablation: an AuM/ViT-style patch
+    embedding (`Conv2d` kernel/stride `(1,4)` → 88 freq tokens/frame) + learnable positional embedding,
+    then a sequence model **over the frequency axis** (reusing the same `seq_model` lstm/mamba/bimamba).
+  - **Any trunk must honor the same output contract:** input `[B x 1 x T x 352]` → output
+    `[B x model_size x T x 88]`, with `T` preserved exactly (the onset subnet reshapes head output
+    straight to `[B x T x 88]` in `run_on_batch` — no interpolation) and freq == 88 (the frame subnet's
+    `F.interpolate(..., size=src_size[-2:])` with `src_size[-1]=88` depends on it).
 - **`Head`** wraps a **`FreqGroupLSTM`**, which reshapes `[B x C x T x freq]` so the sequence model
   runs **over the time axis independently per frequency bin**, then a `Linear` + `sigmoid` per bin.
 - **The ablation seam is `FreqGroupLSTM.__init__`**: `seq_model` selects `BiLSTM` (`'lstm'`),
@@ -112,14 +120,16 @@ ITERATIONS=200 CHECKPOINT_INTERVAL=100 VALIDATION_INTERVAL=100 bash scripts/runp
 
 `train.py` is a [sacred](https://sacred.readthedocs.io/) `Experiment`. Configuration is code, set via
 `@ex.config` functions, and overridden on the CLI after the keyword **`with`**. **Named configs**
-(`@ex.named_config`) are toggled by naming them after `with`. Two independent axes:
+(`@ex.named_config`) are toggled by naming them after `with`. Three independent axes:
 
 | Axis | Named configs | Effect |
 |------|---------------|--------|
 | **Model size** | `hpp_base` (128), `hpp_tiny` (64), `hpp_ultra_tiny` (48) | Set `model_size`; collapse to a single `onset_subnet` carrying all four heads. |
 | **Sequence model** | `mamba`, `bimamba`, `mamba2`, `bimamba2` | Set `seq_model` (`mamba`/`bimamba`) and `mamba_impl` (`mamba1`/`mamba2`). |
+| **Trunk (acoustic model)** | `patchify` | Set `trunk='patch'` (`PatchTrunk`) instead of the default `'cnn'` (`CNNTrunk`). Composes with any size + sequence-model config; the patch trunk reuses the same `seq_model` axis. |
 
-Default (no sequence-model config) is `seq_model='lstm'` — the exact original HPPNet baseline. When
+Default (no sequence-model config) is `seq_model='lstm'` and (no `patchify`) `trunk='cnn'` — the exact
+original HPPNet baseline. When
 adding a config knob, add it to the appropriate `@ex.config` function and thread it through
 `HPPNet.__init__` via the `config` dict (use `config.get('key', default)` to stay backward-compatible
 with older saved models/configs, as `seq_model`/`mamba_impl` do).

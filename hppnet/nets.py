@@ -60,6 +60,77 @@ class FreqGroupLSTM(nn.Module):
         x = torch.sigmoid(x)
         return x
 
+class PatchTrunk(nn.Module):
+    """AuM/ViT-style patch-embedding trunk -- a drop-in replacement for ``CNNTrunk``.
+
+    Instead of the hand-designed harmonic dilated convolutions, this patchifies the
+    CQT log-spectrogram (like Audio Mamba treats a spectrogram as an image) and runs
+    a sequence model over the *frequency* axis to mix information across pitches. The
+    downstream ``FreqGroupLSTM`` heads still model the time axis, so the two axes are
+    cleanly factorized.
+
+    Same tensor contract as ``CNNTrunk``: input ``[B x 1 x T x 352]`` -> output
+    ``[B x embedding x T x 88]``, with ``T`` preserved exactly and freq == 88.
+
+    ``patch_f = BINS_PER_SEMITONE`` (4) maps the 352 CQT bins to exactly 88 tokens
+    (one per semitone / piano key), and ``patch_t = 1`` preserves the time dimension,
+    so no un-patchify or interpolation is needed. ``seq_model`` selects the sequence
+    model over the frequency tokens ('lstm' | 'mamba' | 'bimamba'), reusing the same
+    blocks as ``FreqGroupLSTM`` -- the Mamba imports stay lazy so the LSTM/CPU path is
+    unaffected.
+    """
+    def __init__(self, c_in=1, embedding=128, patch_t=1, patch_f=BINS_PER_SEMITONE,
+                 n_freq_out=88, seq_model='lstm', mamba_impl='mamba1', depth=2) -> None:
+        super().__init__()
+
+        # Patch embedding: non-overlapping (patch_t x patch_f) patches -> embedding dim.
+        self.patch_embed = nn.Conv2d(c_in, embedding,
+                                     kernel_size=[patch_t, patch_f],
+                                     stride=[patch_t, patch_f])
+        # Learnable positional embedding over the 88 frequency tokens (fixed pitch semantics).
+        self.pos_embed = nn.Parameter(torch.zeros(1, embedding, 1, n_freq_out))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        self.norm = nn.InstanceNorm2d(embedding)
+
+        # Sequence model over the frequency axis, stacked `depth` times.
+        # Mirrors FreqGroupLSTM's selection so in == out == embedding for each block.
+        self.blocks = nn.ModuleList()
+        for _ in range(depth):
+            if seq_model == 'lstm':
+                self.blocks.append(BiLSTM(embedding, embedding//2))
+            elif seq_model == 'mamba':
+                from .mamba import MambaSeq
+                self.blocks.append(MambaSeq(embedding, embedding, impl=mamba_impl))
+            elif seq_model == 'bimamba':
+                from .mamba import BiMambaSeq
+                self.blocks.append(BiMambaSeq(embedding, embedding, impl=mamba_impl))
+            else:
+                raise ValueError(f'unknown seq_model: {seq_model}')
+
+    def forward(self, x):
+        # inputs:  [b x 1 x T x 352]
+        # outputs: [b x embedding x T x 88]
+
+        # => [b x C x T x 88]
+        x = self.patch_embed(x)
+        x = x + self.pos_embed
+        x = self.norm(x)
+
+        b, c, t, n_freq = x.size()
+        # => [b x T x freq x C]
+        x = torch.permute(x, [0, 2, 3, 1])
+        # => [(b*T) x freq x C] -- each time frame is an independent sequence over frequency
+        x = x.reshape([b*t, n_freq, c])
+        for blk in self.blocks:
+            # => [(b*T) x freq x C]
+            x = blk(x)
+        # => [b x T x freq x C]
+        x = x.reshape([b, t, n_freq, c])
+        # => [b x C x T x 88]
+        x = torch.permute(x, [0, 3, 1, 2])
+        return x
+
+
 class HarmonicDilatedConv(nn.Module):
     def __init__(self, c_in, c_out) -> None:
         super().__init__()

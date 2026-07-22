@@ -110,6 +110,13 @@ def model_config():
     seq_model = 'lstm'
     mamba_impl = 'mamba1'
 
+    # Trunk / "acoustic model" (ablation).
+    #   trunk: 'cnn' (baseline harmonic dilated convs) | 'patch' (AuM/ViT-style patch
+    #          embedding + sequence-over-frequency, using the same seq_model above).
+    #   patch_trunk_depth: number of stacked sequence blocks in the patch trunk.
+    trunk = 'cnn'
+    patch_trunk_depth = 2
+
 
 @ex.named_config
 def hpp_base():
@@ -168,6 +175,21 @@ def bimamba2():
     seq_model = 'bimamba'
     mamba_impl = 'mamba2'
     model_name = 'HPPNet-BiMamba2'
+
+
+# ---------------------------------------------------------------------------
+# Trunk ablation: replace the harmonic dilated conv acoustic model with an
+# AuM/ViT-style patch-embedding trunk that patchifies the CQT and runs a
+# sequence model over the frequency axis. Orthogonal to the seq-model configs,
+# so it composes with any size + seq-model config, e.g.
+#   python train.py with hpp_tiny patchify            # patch trunk + LSTM
+#   python train.py with hpp_tiny patchify bimamba    # patch trunk + BiMamba
+# (patchify+mamba/bimamba requires a CUDA GPU, like the seq-model ablation.)
+# ---------------------------------------------------------------------------
+@ex.named_config
+def patchify():
+    trunk = 'patch'
+    model_name = 'HPPNet-Patch'
 
 
 @ex.config
