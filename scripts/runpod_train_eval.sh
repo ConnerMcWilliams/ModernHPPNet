@@ -103,7 +103,7 @@ if [ "$SKIP_SETUP" != "1" ]; then
   # alias to `float` in place; this is what actually makes `from hppnet import *` work. The word
   # boundary leaves np.float32/np.float64 intact, and the grep|xargs form is a no-op once patched.
   NNAUDIO_DIR="$("$PYTHON" -c 'import nnAudio, os; print(os.path.dirname(nnAudio.__file__))')"
-  grep -rlZ --include='*.py' -E 'np\.float\b' "$NNAUDIO_DIR" | xargs -0 -r sed -i -E 's/np\.float\b/float/g'
+  { grep -rlZ --include='*.py' -E 'np\.float\b' "$NNAUDIO_DIR" || true; } | xargs -0 -r sed -i -E 's/np\.float\b/float/g'
 fi
 
 # --------------------------------------------------------------------------------------------
