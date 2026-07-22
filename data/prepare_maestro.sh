@@ -20,6 +20,22 @@ DIR="${ZIP%.zip}"
 
 echo "Using $JOBS parallel workers."
 
+# Pick the archive back end up front so the download skip-guard can reuse the
+# lister to verify an existing zip before trusting it.
+if command -v unzip >/dev/null 2>&1; then
+    list_cmd=(unzip -Z1 "$ZIP")
+    test_cmd=(unzip -t -qq "$ZIP")
+    extract_many() { local zip="$1"; shift; unzip -o -q "$zip" "$@"; }
+elif command -v bsdtar >/dev/null 2>&1; then
+    list_cmd=(bsdtar -tf "$ZIP")
+    test_cmd=(bsdtar -tf "$ZIP")
+    extract_many() { local zip="$1"; shift; bsdtar -xf "$zip" "$@"; }
+else
+    echo "Neither unzip nor bsdtar found; cannot extract." >&2
+    exit 1
+fi
+export -f extract_many
+
 ########################################################################
 # 1. Download (101 GB) in parallel
 ########################################################################
@@ -60,16 +76,20 @@ download_ranged() {
     got=$(stat -c '%s' "$ZIP")
     if [ "$got" -ne "$size" ]; then
         echo "Size mismatch: expected $size, got $got" >&2
+        rm -f "$ZIP"
         exit 1
     fi
 }
 
-if [ -f "$ZIP" ]; then
-    echo "$ZIP already present; skipping download."
+if [ -s "$ZIP" ] && "${test_cmd[@]}" >/dev/null 2>&1; then
+    echo "$ZIP already present and valid; skipping download."
 elif command -v aria2c >/dev/null 2>&1; then
+    [ -f "$ZIP" ] && echo "$ZIP failed integrity check; re-downloading." >&2
     echo "Downloading with aria2c ($JOBS connections) ..."
-    aria2c -x "$JOBS" -s "$JOBS" -o "$ZIP" "$URL"
+    x="$JOBS"; [ "$x" -gt 16 ] && x=16
+    aria2c -x "$x" -s "$JOBS" -o "$ZIP" "$URL"
 else
+    [ -f "$ZIP" ] && echo "$ZIP failed integrity check; re-downloading." >&2
     echo "Downloading the MAESTRO dataset ..."
     download_ranged
 fi
@@ -79,23 +99,21 @@ fi
 ########################################################################
 echo "Extracting the files with $JOBS workers ..."
 
-# List archive entries, then extract them concurrently. unzip can extract a
-# single named entry per invocation; bsdtar (libarchive) is the fallback.
-if command -v unzip >/dev/null 2>&1; then
-    list_cmd=(unzip -Z1 "$ZIP")
-    extract_one() { unzip -o -q "$1" "$2"; }
-elif command -v bsdtar >/dev/null 2>&1; then
-    list_cmd=(bsdtar -tf "$ZIP")
-    extract_one() { bsdtar -xf "$1" "$2"; }
-else
-    echo "Neither unzip nor bsdtar found; cannot extract." >&2
+# List the file entries once, split them into $JOBS roughly-equal batches, and
+# run one extractor per batch. Each invocation re-parses the central directory
+# only once (instead of once per entry) and extracts all its members in a
+# single call.
+entries=$("${list_cmd[@]}" | grep -v '/$' || true)
+if [ -z "$entries" ]; then
+    echo "Archive contains no file entries; nothing to extract." >&2
     exit 1
 fi
-export -f extract_one
+total=$(printf '%s\n' "$entries" | grep -c .)
+batch=$(( (total + JOBS - 1) / JOBS ))
+[ "$batch" -lt 1 ] && batch=1
 
-"${list_cmd[@]}" \
-    | grep -v '/$' \
-    | xargs -d '\n' -P "$JOBS" -I {} bash -c 'extract_one "$0" "$1"' "$ZIP" {}
+printf '%s\n' "$entries" \
+    | xargs -d '\n' -P "$JOBS" -n "$batch" bash -c 'extract_many "$0" "$@"' "$ZIP"
 
 echo "Extraction done."
 
