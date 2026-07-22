@@ -6,14 +6,17 @@ Guidance for AI assistants (and humans) working in this repository.
 
 **ModernHPPNet** is a PyTorch implementation of **HPPNet** ([arXiv:2208.14339](https://arxiv.org/abs/2208.14339)),
 a piano transcription model — it converts raw piano audio into note events (MIDI). It builds on the
-original HPPNet PyTorch code and adds two things over the baseline:
+original HPPNet PyTorch code and adds three things over the baseline:
 
 1. A **Mamba / BiMamba sequence-model ablation** — the frequency-grouped `BiLSTM` inside each output
    head can be swapped for a (bi)directional [Mamba](https://github.com/state-spaces/mamba) SSM.
-2. **Weights & Biases** experiment tracking (replacing the project's old TensorBoard logging).
+2. A **patchify-trunk ablation** — the harmonic dilated-conv acoustic model (`CNNTrunk`) can be
+   swapped for an AuM/ViT-style patch-embedding trunk (`PatchTrunk`) via `trunk='patch'`.
+3. **Weights & Biases** experiment tracking (replacing the project's old TensorBoard logging).
 
 Training uses the **Maestro v3** dataset; testing typically uses the Disklavier portion of the **MAPS**
-database. The pipeline: audio → CQT log-spectrogram → CNN trunk (harmonic dilated convs) →
+database. The pipeline: audio → CQT log-spectrogram → CNN/patch trunk (harmonic dilated convs or
+patch embedding) →
 frequency-grouped sequence heads (onset / frame / offset / velocity) → note decoding → MIDI.
 
 This is a research/experimentation codebase, not a packaged library — there are no tests, no CI, and
