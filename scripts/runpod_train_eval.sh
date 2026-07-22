@@ -133,9 +133,24 @@ wandb login "$WANDB_API_KEY"
 # --------------------------------------------------------------------------------------------
 # 4. Dataset (full MAESTRO v3 -> 16 kHz mono FLAC)
 # --------------------------------------------------------------------------------------------
-if [ "$SKIP_DATA" != "1" ] && [ ! -f "data/maestro-v3.0.0/maestro-v3.0.0.csv" ]; then
-  echo "==> Downloading + preparing MAESTRO v3 (needs ~200 GB scratch and a good while)"
+maestro_ready() {
+  # "Ready" means the metadata CSV is present AND at least one converted FLAC exists.
+  # The dataset loader keeps only rows whose 16 kHz .flac is on disk (the original
+  # 44.1 kHz WAVs are unusable), so a CSV-only tree — extracted but not yet converted —
+  # sails past a CSV check and then dies at training with num_samples=0. prepare_maestro.sh
+  # is resumable, so re-running here just fills in the missing FLACs (no re-download).
+  [ -f "data/maestro-v3.0.0/maestro-v3.0.0.csv" ] \
+    && [ -n "$(find data/maestro-v3.0.0 -name '*.flac' -print -quit 2>/dev/null)" ]
+}
+
+if [ "$SKIP_DATA" != "1" ] && ! maestro_ready; then
+  echo "==> Preparing MAESTRO v3 (download/extract are skipped if already present; needs ~200 GB scratch)"
   ( cd data && bash ./prepare_maestro.sh )
+  if ! maestro_ready; then
+    echo "[error] MAESTRO still has no FLAC files after prepare_maestro.sh — check disk space" >&2
+    echo "        (df -h /workspace) and ffmpeg; the dataset loader needs 16 kHz FLACs." >&2
+    exit 1
+  fi
 else
   echo "==> Skipping dataset prep (already present or SKIP_DATA=1)"
 fi
