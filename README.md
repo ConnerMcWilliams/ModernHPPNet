@@ -72,6 +72,9 @@ name/group/id come from the standard wandb env vars (`WANDB_NAME`, `WANDB_RUN_GR
 on the same run. If `WANDB_API_KEY` is unset, training still proceeds and logs to a local disabled
 run.
 
+Independently of wandb, sacred keeps a file-based run log under `logdir`. The MongoDB observer that
+older versions hard-wired is now off by default — set `HPPNET_MONGO=<host:port>` to re-enable it.
+
 ### Model & Sequence-Model Options
 
 `train.py` exposes several [sacred](https://sacred.readthedocs.io/) *named configs* that can be
