@@ -91,6 +91,18 @@ conda activate "$ENV_NAME"
 set -u
 PYTHON="$(command -v python)"
 
+# setuptools 82.0 (Feb 2026) removed the bundled `pkg_resources`, which sacred still imports at
+# startup (and so do wandb / some other deps) -> "ModuleNotFoundError: No module named
+# 'pkg_resources'" the instant train.py/evaluate.py run. Fresh envs now resolve setuptools>=82,
+# so cap it and put `pkg_resources` back. Done unconditionally (even with SKIP_SETUP=1) so an
+# env created by an earlier run gets repaired too. The PIP_CONSTRAINT file makes every later
+# `pip install` — including PEP 517 build-isolation envs (e.g. the git+mir_eval build) — honor
+# the cap, so nothing pulls setuptools>=82 back in.
+export PIP_CONSTRAINT="${PIP_CONSTRAINT:-/tmp/hppnet-pip-constraints.txt}"
+printf 'setuptools<82\n' > "$PIP_CONSTRAINT"
+echo "==> Pinning setuptools<82 (restores pkg_resources, removed in setuptools 82.0)"
+pip install "setuptools<82" wheel
+
 if [ "$SKIP_SETUP" != "1" ]; then
   echo "==> Installing Python dependencies (torch 2.4.1 + Mamba stack)"
   pip install --upgrade pip

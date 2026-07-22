@@ -50,6 +50,18 @@ grep -rlZ --include='*.py' -E 'np\.float\b' "$NNAUDIO_DIR" | xargs -0 -r sed -i 
 
 `scripts/runpod_train_eval.sh` applies this patch automatically.
 
+**setuptools / `pkg_resources` caveat.** `setuptools 82.0` (Feb 2026) removed the bundled
+`pkg_resources`, which `sacred` (and `wandb`) still import at startup. On a fresh env — which now
+resolves `setuptools >= 82` — both `train.py` and `evaluate.py` die immediately with
+`ModuleNotFoundError: No module named 'pkg_resources'`. Fix it by capping setuptools:
+
+```bash
+pip install "setuptools<82"
+```
+
+`scripts/runpod_train_eval.sh` pins this automatically (and sets `PIP_CONSTRAINT` so later installs
+don't undo it).
+
 `train.py` is written using [sacred](https://sacred.readthedocs.io/), and accepts configuration options such as:
 
 ```bash
