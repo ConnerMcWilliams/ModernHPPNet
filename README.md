@@ -222,20 +222,24 @@ bash scripts/runpod_train_eval.sh
 
 Each variant becomes one wandb run (its training curves plus its final MAESTRO-test metrics),
 grouped by `EXPERIMENT`. Key knobs, all env-overridable: `VARIANTS="lstm mamba bimamba"`,
-`SIZE_CONFIG=hpp_tiny`, `TRUNK=cnn`, `ITERATIONS=100000`, `WANDB_PROJECT`, `EXPERIMENT`. Do a cheap
+`SIZE_CONFIG=hpp_tiny`, `ITERATIONS=100000`, `WANDB_PROJECT`, `EXPERIMENT`. Do a cheap
 end-to-end check first before committing to the long run:
 
 ```bash
 ITERATIONS=200 CHECKPOINT_INTERVAL=100 VALIDATION_INTERVAL=100 bash scripts/runpod_train_eval.sh
 ```
 
-To run the **patchify** ablation instead, set `TRUNK=patch` — this sweeps the same three sequence
-models (`lstm`/`mamba`/`bimamba`) with the patch-embedding trunk, and prefixes the run names/logdirs
-with `patch_` so they never collide with the `cnn` runs:
+The **patchify** ablation is its own script, `scripts/patchify_train_eval.sh`. It sweeps the same
+three sequence models (`lstm`/`mamba`/`bimamba`) with the patch-embedding trunk, and prefixes the run
+names/logdirs with `patch_` so they never collide with the baseline (`CNNTrunk`) runs:
 
 ```bash
-TRUNK=patch bash scripts/runpod_train_eval.sh
+bash scripts/patchify_train_eval.sh
 ```
+
+Both scripts share all of their setup + safeguards from `scripts/lib/common.sh` (sourced, never
+edited per experiment). To add a new experiment, copy one of these scripts rather than adding a knob
+to an existing one — see `CLAUDE.md`, "RunPod experiment scripts (safeguards & adding a new one)".
 
 ## Acknowledgements
 

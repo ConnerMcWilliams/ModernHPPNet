@@ -45,7 +45,9 @@ hppnet/             # The model package. `from hppnet import *` re-exports the p
   mel.py            #   Mel spectrogram helper (legacy; import commented out in __init__.py).
 
 scripts/
-  runpod_train_eval.sh   # One-shot setup+train+eval of all 3 variants on a fresh RunPod CUDA box.
+  lib/common.sh          # SOURCED shared library: all env setup + safeguards + the train/eval loop.
+  runpod_train_eval.sh   # Experiment: baseline lstm/mamba/bimamba on CNNTrunk (sources lib/common.sh).
+  patchify_train_eval.sh # Experiment: same 3 seq models on PatchTrunk (sources lib/common.sh).
 data/
   prepare_maestro.sh     # Downloads Maestro v3, unzips, transcodes wav -> 16 kHz mono FLAC.
   .keep                  # Datasets are gitignored; they live here at runtime.
@@ -114,8 +116,9 @@ python transcribe.py path/to/audio.flac --model_file runs/model/model-100000.pt 
 
 # Full 3-variant (lstm/mamba/bimamba) ablation on a fresh RunPod CUDA box
 export WANDB_API_KEY=xxxxxxxx
-bash scripts/runpod_train_eval.sh
-# Cheap end-to-end smoke test first:
+bash scripts/runpod_train_eval.sh              # baseline: the 3 seq models on CNNTrunk
+bash scripts/patchify_train_eval.sh            # patchify ablation: the 3 seq models on PatchTrunk
+# Cheap end-to-end smoke test first (works for either experiment script):
 ITERATIONS=200 CHECKPOINT_INTERVAL=100 VALIDATION_INTERVAL=100 bash scripts/runpod_train_eval.sh
 ```
 
@@ -147,11 +150,70 @@ definitions to remain importable/compatible.
   Default project: `hppnet-mamba-ablation` (override with `WANDB_PROJECT`).
 - Run name/group/id/resume come from standard env vars (`WANDB_NAME`, `WANDB_RUN_GROUP`,
   `WANDB_RUN_ID`, `WANDB_RESUME`, `WANDB_JOB_TYPE`) so a training run and its evaluation can share one
-  run id and land on the same run. `runpod_train_eval.sh` wires these up per variant.
+  run id and land on the same run. The RunPod experiment scripts (via `lib/common.sh`'s `run_ablation`)
+  wire these up per variant.
 - **wandb is best-effort**: if `WANDB_API_KEY` is unset, training/eval still proceed against a local
   disabled run — never let a wandb hiccup break the actual work. Preserve this fallback behavior.
 - Sacred also keeps a file-based run log under `logdir`. The old MongoDB observer is **off by default**;
   set `HPPNET_MONGO=<host:port>` to re-enable it.
+
+## RunPod experiment scripts (safeguards & adding a new one)
+
+The RunPod scripts are structured so the **hard-won environment fixes live in exactly one place** and
+are never re-discovered per experiment. If you find yourself re-fixing any of the safeguards below,
+something is wrong — they should already be inherited.
+
+**Structure — one shared library, one thin script per experiment:**
+
+- **`scripts/lib/common.sh`** is **sourced, never executed**. It owns *everything* reusable: all
+  environment setup (system deps, conda env, the pinned torch+Mamba stack, the nnAudio patch, wandb
+  login, MAESTRO prep) **and** the `run_ablation` train→eval loop. All the safeguards below live here.
+- **Each experiment is its own thin script** (`runpod_train_eval.sh` = baseline CNNTrunk;
+  `patchify_train_eval.sh` = PatchTrunk). A script sources `lib/common.sh`, sets a few knobs
+  (`VARIANTS`, `EXTRA_CONFIGS` = extra sacred named configs, `RUN_TAG_PREFIX` = run-name/logdir
+  prefix), then calls `hppnet_setup` and `run_ablation`. That's the whole script.
+- **Never bake a new ablation axis into an existing experiment's script** (no growing `TRUNK=`-style
+  switches inside `runpod_train_eval.sh`). New experiment ⇒ **new script**. It keeps each script a
+  self-documenting record of one experiment and stops the shared setup from drifting between copies.
+
+**Creating a new experiment** — copy `patchify_train_eval.sh` to `scripts/<name>_train_eval.sh` and
+change only the knobs:
+
+1. If it needs a new config, add a `@ex.named_config` in `train.py` (thread it through
+   `HPPNet.__init__` via `config.get('key', default)` — keep it optional), and update `README.md`.
+2. In the new script, set `EXTRA_CONFIGS="<your named config>"` and a unique `RUN_TAG_PREFIX="<tag>_"`
+   so its wandb runs / logdirs never collide with other experiments' arms.
+3. Set `VARIANTS`/`SIZE_CONFIG` if the sweep differs from the default `lstm mamba bimamba` / `hpp_tiny`.
+4. Leave `hppnet_setup` + `run_ablation` as-is — do **not** copy setup logic into the script.
+5. Smoke-test end-to-end before the long run:
+   `ITERATIONS=200 CHECKPOINT_INTERVAL=100 VALIDATION_INTERVAL=100 bash scripts/<name>_train_eval.sh`.
+
+**Safeguards baked into `scripts/lib/common.sh`** (each one is a past fix — leave them in place):
+
+- **Run with `bash`, not `sh`/`dash`.** The scripts use `set -euo pipefail`; dash aborts with
+  `set: Illegal option -o pipefail`. Every invocation and doc uses `bash scripts/...`.
+- **`set +u` around conda.** conda's own `profile.d` scripts reference unset vars, so `set -u` is
+  relaxed only around `source .../conda.sh` + `conda activate`, then restored.
+- **conda ToS auto-accept.** Recent Miniconda gates the default channels behind a Terms-of-Service
+  prompt that aborts non-interactive `conda create`; `conda tos accept` for the `main`/`r` channels
+  runs up front (`|| true`, so it's a no-op on older conda).
+- **`setuptools<82` + `PIP_CONSTRAINT`.** setuptools 82.0 removed bundled `pkg_resources`, which
+  `sacred`/`wandb` import at startup. The cap is applied **unconditionally** (even `SKIP_SETUP=1`, to
+  repair older envs) and via a `PIP_CONSTRAINT` file so build-isolation installs honor it too.
+- **`numpy<2` + the nnAudio `np.float` patch.** nnAudio 0.2.6 uses the removed `np.float` alias;
+  a `grep -rlZ … || true | xargs -0 -r sed` rewrites it to `float` in the installed package. The
+  form is **idempotent under `pipefail`** (no match ⇒ still exit 0) and leaves `np.float32/64` intact.
+- **`transformers<4.45`.** mamba-ssm 2.2.x imports a symbol removed in newer transformers.
+- **Prebuilt Mamba wheels pinned to the torch2.4/cu12/cp310 ABI.** Avoids an nvcc compile; if the
+  pod's torch/python differ, switch to the documented `--no-build-isolation` compile path.
+- **MAESTRO readiness self-heal (`maestro_ready`).** A CSV-only tree (extracted but not yet
+  transcoded) passes a naïve CSV check and then dies at training with `num_samples=0`. Readiness
+  requires the CSV **and** at least one `.flac`; if missing, it re-runs the resumable
+  `prepare_maestro.sh` (no re-download) and fails loudly if still empty.
+- **Checkpoint fallback.** If `model-<ITERATIONS>.pt` is absent (iterations not a multiple of the
+  checkpoint interval), eval falls back to the newest `model-*.pt`.
+- **Idempotent / resumable.** `SKIP_SETUP=1` reuses an env, `SKIP_DATA=1` skips prep, and the conda
+  env is reused across pod restarts.
 
 ## Datasets
 
@@ -168,7 +230,7 @@ definitions to remain importable/compatible.
 - **nnAudio / numpy `np.float`**: `nnAudio==0.2.6` uses numpy's removed `np.float` alias, so on
   `numpy >= 1.24` `from hppnet import *` (run by `train.py`/`evaluate.py`) fails at import. Fix by
   installing `numpy < 1.24` **or** rewriting the bare `np.float`→`float` in the installed nnAudio
-  package. `scripts/runpod_train_eval.sh` applies this patch automatically. This is the single most
+  package. `scripts/lib/common.sh` applies this patch automatically. This is the single most
   common setup failure — check it first when imports break.
 - **Mamba is CUDA-only and not in `requirements.txt`**. It needs a GPU with compute capability ≥ 7.0,
   plus `causal-conv1d`, `mamba-ssm`, `einops` (and `transformers<4.45` for mamba-ssm 2.2.x). Prefer the
@@ -177,12 +239,12 @@ definitions to remain importable/compatible.
 - **`mamba2` + `hpp_ultra_tiny` is invalid**: Mamba-2 needs `d_model * expand` divisible by head dim
   (64). Holds for sizes 128/64 with `expand=2`, **not** 48. Use `mamba1` with `hpp_ultra_tiny`.
 - **Dependency pins are load-bearing** — read the comments in `requirements.txt` and
-  `runpod_train_eval.sh` before bumping versions (`sacred>=0.8.7`, `nnAudio==0.2.6`, torch 2.4 stack,
+  `scripts/lib/common.sh` before bumping versions (`sacred>=0.8.7`, `nnAudio==0.2.6`, torch 2.4 stack,
   `transformers<4.45`, `setuptools<82`).
 - **`setuptools<82` / `pkg_resources`**: setuptools 82.0 (Feb 2026) removed the bundled
   `pkg_resources`, which `sacred` (imported at the top of `train.py`/`evaluate.py`) and `wandb` still
   `import` — so a fresh env (now resolving `setuptools>=82`) dies immediately with
-  `ModuleNotFoundError: No module named 'pkg_resources'`. `runpod_train_eval.sh` pins `setuptools<82`
+  `ModuleNotFoundError: No module named 'pkg_resources'`. `scripts/lib/common.sh` pins `setuptools<82`
   and sets `PIP_CONSTRAINT` so nothing re-upgrades it. Keep that pin.
 - The codebase carries a lot of **commented-out experimental code** (alternate front-ends, old metric
   blocks, mel path). This is deliberate history, not dead code to clean up unless asked.
