@@ -78,6 +78,12 @@ set +u
 # shellcheck disable=SC1091
 source "$CONDA_HOME/etc/profile.d/conda.sh"
 
+# Recent Miniconda gates the Anaconda default channels behind a Terms-of-Service
+# prompt that aborts non-interactive `conda create`. Accept it up front (no-op if
+# already accepted, or if this conda build predates the `tos` subcommand).
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main >/dev/null 2>&1 || true
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r    >/dev/null 2>&1 || true
+
 if ! conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
   echo "==> Creating conda env '$ENV_NAME' (python 3.10)"
   conda create -y -n "$ENV_NAME" python=3.10
@@ -85,6 +91,18 @@ fi
 conda activate "$ENV_NAME"
 set -u
 PYTHON="$(command -v python)"
+
+# setuptools 82.0 (Feb 2026) removed the bundled `pkg_resources`, which sacred still imports at
+# startup (and so do wandb / some other deps) -> "ModuleNotFoundError: No module named
+# 'pkg_resources'" the instant train.py/evaluate.py run. Fresh envs now resolve setuptools>=82,
+# so cap it and put `pkg_resources` back. Done unconditionally (even with SKIP_SETUP=1) so an
+# env created by an earlier run gets repaired too. The PIP_CONSTRAINT file makes every later
+# `pip install` — including PEP 517 build-isolation envs (e.g. the git+mir_eval build) — honor
+# the cap, so nothing pulls setuptools>=82 back in.
+export PIP_CONSTRAINT="${PIP_CONSTRAINT:-/tmp/hppnet-pip-constraints.txt}"
+printf 'setuptools<82\n' > "$PIP_CONSTRAINT"
+echo "==> Pinning setuptools<82 (restores pkg_resources, removed in setuptools 82.0)"
+pip install "setuptools<82" wheel
 
 if [ "$SKIP_SETUP" != "1" ]; then
   echo "==> Installing Python dependencies (torch 2.4.1 + Mamba stack)"
@@ -116,9 +134,24 @@ wandb login "$WANDB_API_KEY"
 # --------------------------------------------------------------------------------------------
 # 4. Dataset (full MAESTRO v3 -> 16 kHz mono FLAC)
 # --------------------------------------------------------------------------------------------
-if [ "$SKIP_DATA" != "1" ] && [ ! -f "data/maestro-v3.0.0/maestro-v3.0.0.csv" ]; then
-  echo "==> Downloading + preparing MAESTRO v3 (needs ~200 GB scratch and a good while)"
+maestro_ready() {
+  # "Ready" means the metadata CSV is present AND at least one converted FLAC exists.
+  # The dataset loader keeps only rows whose 16 kHz .flac is on disk (the original
+  # 44.1 kHz WAVs are unusable), so a CSV-only tree — extracted but not yet converted —
+  # sails past a CSV check and then dies at training with num_samples=0. prepare_maestro.sh
+  # is resumable, so re-running here just fills in the missing FLACs (no re-download).
+  [ -f "data/maestro-v3.0.0/maestro-v3.0.0.csv" ] \
+    && [ -n "$(find data/maestro-v3.0.0 -name '*.flac' -print -quit 2>/dev/null)" ]
+}
+
+if [ "$SKIP_DATA" != "1" ] && ! maestro_ready; then
+  echo "==> Preparing MAESTRO v3 (download/extract are skipped if already present; needs ~200 GB scratch)"
   ( cd data && bash ./prepare_maestro.sh )
+  if ! maestro_ready; then
+    echo "[error] MAESTRO still has no FLAC files after prepare_maestro.sh — check disk space" >&2
+    echo "        (df -h /workspace) and ffmpeg; the dataset loader needs 16 kHz FLACs." >&2
+    exit 1
+  fi
 else
   echo "==> Skipping dataset prep (already present or SKIP_DATA=1)"
 fi

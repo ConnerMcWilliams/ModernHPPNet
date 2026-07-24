@@ -178,7 +178,12 @@ definitions to remain importable/compatible.
   (64). Holds for sizes 128/64 with `expand=2`, **not** 48. Use `mamba1` with `hpp_ultra_tiny`.
 - **Dependency pins are load-bearing** — read the comments in `requirements.txt` and
   `runpod_train_eval.sh` before bumping versions (`sacred>=0.8.7`, `nnAudio==0.2.6`, torch 2.4 stack,
-  `transformers<4.45`).
+  `transformers<4.45`, `setuptools<82`).
+- **`setuptools<82` / `pkg_resources`**: setuptools 82.0 (Feb 2026) removed the bundled
+  `pkg_resources`, which `sacred` (imported at the top of `train.py`/`evaluate.py`) and `wandb` still
+  `import` — so a fresh env (now resolving `setuptools>=82`) dies immediately with
+  `ModuleNotFoundError: No module named 'pkg_resources'`. `runpod_train_eval.sh` pins `setuptools<82`
+  and sets `PIP_CONSTRAINT` so nothing re-upgrades it. Keep that pin.
 - The codebase carries a lot of **commented-out experimental code** (alternate front-ends, old metric
   blocks, mel path). This is deliberate history, not dead code to clean up unless asked.
 - Some source comments are in Chinese (e.g. `.vscode/launch.json`, a note in `layers.py`). Leave them.
