@@ -133,6 +133,32 @@ python train.py with hpp_base bimamba         # model_size 128, bidirectional Ma
 
 The default (no sequence-model config) is `seq_model=lstm`, i.e. the original HPPNet baseline.
 
+**Trunk / acoustic model (patchify ablation)** — a third, independent axis swaps the harmonic
+dilated-conv acoustic model (`CNNTrunk`) for an [Audio Mamba](https://arxiv.org/abs/2406.03344)
+/ ViT-style **patch-embedding trunk** (`PatchTrunk`). It patchifies the CQT log-spectrogram (a
+`Conv2d` with kernel/stride `(1, 4)` → one token per semitone, 88 freq tokens/frame, time
+preserved), adds a learnable positional embedding, and runs a sequence model **over the frequency
+axis** — testing whether the hand-designed harmonic prior can be learned instead. The downstream
+frequency-grouped heads still model time, so the two axes stay cleanly factorized.
+
+- `trunk`: `cnn` (baseline harmonic convs) | `patch` (patchify)
+- `patch_trunk_depth`: number of stacked sequence blocks in the patch trunk (default 2)
+
+The patch trunk reuses the **same `seq_model` axis** as the heads, so the patchify ablation runs on
+all three sequence models. Bundled as the `patchify` named config, it composes with any size and
+sequence-model config:
+
+```bash
+python train.py with hpp_tiny patchify            # patch trunk + LSTM
+python train.py with hpp_tiny patchify mamba      # patch trunk + causal Mamba
+python train.py with hpp_tiny patchify bimamba    # patch trunk + BiMamba
+```
+
+The default (no `patchify`) is `trunk=cnn`, i.e. the original harmonic acoustic model. As with the
+sequence-model axis, `mamba` / `bimamba` here need a CUDA GPU (see below); `patchify` on its own runs
+the LSTM path on CPU. The `mamba2` + `hpp_ultra_tiny` (48) divisibility caveat below applies to the
+patch trunk's sequence model too — use `mamba1` there.
+
 **Installing Mamba (CUDA only).** The Mamba options need a CUDA GPU with compute capability ≥ 7.0.
 They are not installed by `requirements.txt` — install them separately. The easiest path uses
 **prebuilt wheels** (no `nvcc` / CUDA toolkit, no compile). For the `torch2.4` / `cu12` / `cp310` /
@@ -196,12 +222,24 @@ bash scripts/runpod_train_eval.sh
 
 Each variant becomes one wandb run (its training curves plus its final MAESTRO-test metrics),
 grouped by `EXPERIMENT`. Key knobs, all env-overridable: `VARIANTS="lstm mamba bimamba"`,
-`SIZE_CONFIG=hpp_tiny`, `ITERATIONS=100000`, `WANDB_PROJECT`, `EXPERIMENT`. Do a cheap end-to-end
-check first before committing to the long run:
+`SIZE_CONFIG=hpp_tiny`, `ITERATIONS=100000`, `WANDB_PROJECT`, `EXPERIMENT`. Do a cheap
+end-to-end check first before committing to the long run:
 
 ```bash
 ITERATIONS=200 CHECKPOINT_INTERVAL=100 VALIDATION_INTERVAL=100 bash scripts/runpod_train_eval.sh
 ```
+
+The **patchify** ablation is its own script, `scripts/patchify_train_eval.sh`. It sweeps the same
+three sequence models (`lstm`/`mamba`/`bimamba`) with the patch-embedding trunk, and prefixes the run
+names/logdirs with `patch_` so they never collide with the baseline (`CNNTrunk`) runs:
+
+```bash
+bash scripts/patchify_train_eval.sh
+```
+
+Both scripts share all of their setup + safeguards from `scripts/lib/common.sh` (sourced, never
+edited per experiment). To add a new experiment, copy one of these scripts rather than adding a knob
+to an existing one — see `CLAUDE.md`, "RunPod experiment scripts (safeguards & adding a new one)".
 
 ## Acknowledgements
 
